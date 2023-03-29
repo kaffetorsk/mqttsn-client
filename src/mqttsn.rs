@@ -62,6 +62,8 @@ where
             // Register new topic
         }
 
+
+
         let mut data = PublishData::new();
         data.push_str(&payload);
 
@@ -87,6 +89,8 @@ where
         let len = packet.try_write(&mut self.send_buffer, ())?;
         self.socket.send(&self.send_buffer[..len]).await?;
 
+        // lag en no_std versjon av waitmap, lag eventloop som legger
+        // inn ack der etterhvert som de blir tilgjengelige.
     }
 
 }
