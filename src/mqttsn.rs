@@ -1,4 +1,4 @@
-use heapless::{String/*, Vec*/};
+use heapless::String;
 use crate::socket::{SendBytes, RecieveBytes, SocketError};
 use mqtt_sn::defs::*;
 use bimap::BiMap;
@@ -25,6 +25,7 @@ pub struct MqttSnClient<S> {
     recv_buffer: [u8; 2048],
     socket: S,
     topics: BiMap<(TopicIdType, u16), String<256>>
+    //acks: FnvIndexMap<u16, , 10>
 }
 
 
