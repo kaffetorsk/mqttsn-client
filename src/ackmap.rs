@@ -4,23 +4,29 @@ use core::task::Waker;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
+use embassy_sync::blocking_mutex::{Mutex, raw::NoopRawMutex};
 
 pub struct AckMap<const C: usize> {
-    acks: FnvIndexMap<u16, AckEntry, C>
+    acks: Mutex<NoopRawMutex, FnvIndexMap<u16, AckEntry, C>>
 }
 
 type Error = AckMapError;
 
 impl<const C: usize> AckMap<C> {
     pub fn new() -> Self {
-        Self { acks: FnvIndexMap::<u16, AckEntry, C>::new() }
+        Self { acks: Mutex::new(FnvIndexMap::<u16, AckEntry, C>::new()) }
     }
 
-    pub fn insert(&mut self, key: u16, value: Message) -> Result<(), Error> {
-        match self.acks.get(&key) {
-            Some(AckEntry::Value(msg)) => (),
-            Some(AckEntry::Waker(waker)) => (), // wake task
-            None => { self.acks.insert(key, AckEntry::Value(value))?; }
+    pub async fn insert(&mut self, key: u16, value: Message) -> Result<(), Error> {
+        let mut acks = self.acks.get_mut();
+        match acks.get(&key) {
+            Some(AckEntry::Value(msg)) => return Err(AckMapError::IdUsed),
+            Some(AckEntry::Waker(waker)) => {
+                acks.insert(key, AckEntry::Value(value))?;
+                // Må muligens clone denne før jeg inserter?
+                waker.clone().wake();
+            },
+            None => { acks.insert(key, AckEntry::Value(value))?; }
         }
         Ok(())
     }
@@ -37,17 +43,21 @@ enum AckEntry {
 
 pub struct Ack<'a, const C: usize> {
     key: u16,
-    acks: &'a FnvIndexMap<u16, AckEntry, C>
+    acks: &'a Mutex<NoopRawMutex, FnvIndexMap<u16, AckEntry, C>>
 }
 
 impl<const C: usize> Future for Ack<'_, C> {
     type Output = Result<Message, Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        match self.acks.get(&self.key) {
-            Some(AckEntry::Value(msg)) => Poll::Ready(Ok(*msg)),
+        let mut acks = self.acks.get_mut();
+        match acks.get(&self.key) {
+            Some(AckEntry::Value(msg)) => {
+                acks.remove(&self.key);
+                Poll::Ready(Ok(*msg))
+            },
             _ => {
-                self.acks.insert(self.key, AckEntry::Waker(cx.waker().clone()));
+                acks.insert(self.key, AckEntry::Waker(cx.waker().clone()));
                 Poll::Pending
             }
         }
@@ -57,6 +67,7 @@ impl<const C: usize> Future for Ack<'_, C> {
 pub enum AckMapError {
     Full,
     Generic,
+    IdUsed
 }
 
 impl<K, V> From<(K, V)> for AckMapError {

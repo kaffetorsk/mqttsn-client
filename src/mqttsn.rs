@@ -1,11 +1,9 @@
 use heapless::String;
 use crate::socket::{SendBytes, RecieveBytes, SocketError};
-use crate::ackmap::AckMap;
+use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
 use bimap::BiMap;
 use byte::{TryWrite};
-use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
-use embassy_sync::mutex::Mutex;
 
 type Error = MqttSnClientError;
 
@@ -28,7 +26,7 @@ pub struct MqttSnClient<S> {
     recv_buffer: [u8; 2048],
     socket: S,
     topics: BiMap<(TopicIdType, u16), String<256>>,
-    acks: Mutex<ThreadModeRawMutex, AckMap>
+    acks: AckMap<10>,
 }
 
 
@@ -52,7 +50,7 @@ where
             recv_buffer: [0; 2048],
             socket,
             topics: BiMap::new(),
-            acks: Mutex::new(AckMap::new())
+            acks: AckMap::<10>::new()
         })
     }
 
@@ -85,15 +83,16 @@ where
         Ok(())
     }
 
-    async fn register(&self, topic: &String<256>) -> Result<u16, Error> {
+    async fn register(&mut self, topic: &String<256>) -> Result<u16, Error> {
+        let msg_id = self.msg_id.next().unwrap();
         let packet = Register {
             topic_id: 0,
-            msg_id: self.msg_id.next().unwrap(),
+            msg_id,
             topic_name: TopicName::from(&topic)
         };
         let len = packet.try_write(&mut self.send_buffer, ())?;
         self.socket.send(&self.send_buffer[..len]).await?;
-        match self.acks.wait().await {
+        match self.acks.wait(msg_id).await? {
             Message::RegAck(RegAck {
                 topic_id, code: ReturnCode::Accepted, ..
             }) => {
@@ -146,5 +145,11 @@ impl From<SocketError> for MqttSnClientError {
 impl From<byte::Error> for MqttSnClientError {
     fn from(_e: byte::Error) -> Self {
         MqttSnClientError::CodecError
+    }
+}
+
+impl From<AckMapError> for MqttSnClientError {
+    fn from(_e: AckMapError) -> Self {
+        MqttSnClientError::AckError
     }
 }
