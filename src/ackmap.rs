@@ -9,30 +9,29 @@ pub struct AckMap<const C: usize> {
 type Error = AckMapError;
 
 impl<const C: usize> AckMap<C> {
+    pub fn new() -> Self {
+        Self { acks: FnvIndexMap::<u16, AckEntry, C>::new() }
+    }
+
     pub fn insert(&mut self, key: u16, value: Message) -> Result<(), Error> {
-        if self.acks.contains_key(&key) {
-            // TODO
-        } else {
-            self.acks.insert(key, AckEntry::new(value))?;
+        match self.acks.get(&key) {
+            Some(AckEntry::Value(msg)) => (),
+            Some(AckEntry::Waker(waker)) => (),
+            None => { self.acks.insert(key, AckEntry::Value(value))?; }
         }
         Ok(())
     }
 
-    pub fn wait(&self, key: u16) -> impl Future<_> {
-        // TODO
-    }
+    // pub fn wait(&self, key: u16) -> impl Future<_> {
+    //     // TODO
+    // }
 }
 
-struct AckEntry {
-    value: Option<Message>,
-    waker: Option<Waker>
+enum AckEntry {
+    Value(Message),
+    Waker(Waker),
 }
 
-impl AckEntry {
-    pub fn new(msg: Message) -> Self {
-        Self {value: Some(msg), waker: None}
-    }
-}
 pub enum AckMapError {
     Full,
     Generic,

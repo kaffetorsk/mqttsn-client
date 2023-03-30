@@ -1,8 +1,11 @@
 use heapless::String;
 use crate::socket::{SendBytes, RecieveBytes, SocketError};
+use crate::ackmap::AckMap;
 use mqtt_sn::defs::*;
 use bimap::BiMap;
 use byte::{TryWrite};
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_sync::mutex::Mutex;
 
 type Error = MqttSnClientError;
 
@@ -24,8 +27,8 @@ pub struct MqttSnClient<S> {
     send_buffer: [u8; 2048],
     recv_buffer: [u8; 2048],
     socket: S,
-    topics: BiMap<(TopicIdType, u16), String<256>>
-    //acks: FnvIndexMap<u16, , 10>
+    topics: BiMap<(TopicIdType, u16), String<256>>,
+    acks: Mutex<ThreadModeRawMutex, AckMap>
 }
 
 
@@ -48,7 +51,8 @@ where
             send_buffer: [0; 2048],
             recv_buffer: [0; 2048],
             socket,
-            topics: BiMap::new()
+            topics: BiMap::new(),
+            acks: Mutex::new(AckMap::new())
         })
     }
 
@@ -56,10 +60,11 @@ where
         let mut flags = Flags::default();
         let topic_id;
         if let Some((topic_type, id)) = self.topics.get_by_right(&topic) {
-            topic_id = id;
+            topic_id = *id;
             flags.set_topic_id_type(*topic_type as u8);
         } else {
-            self.register()
+            topic_id = self.register(&topic).await?;
+            self.topics.insert((TopicIdType::Id, topic_id), topic);
             // Register new topic
         }
 
@@ -70,7 +75,7 @@ where
 
         let packet = Publish {
             flags,
-            topic_id: *topic_id,
+            topic_id: topic_id,
             msg_id: self.msg_id.next().unwrap(),
             data,
 
@@ -81,7 +86,7 @@ where
         Ok(())
     }
 
-    async fn register(&self, topic: String<256>) -> Result<u16, Error> {
+    async fn register(&self, topic: &String<256>) -> Result<u16, Error> {
         let packet = Register {
             topic_id: 0,
             msg_id: self.msg_id.next().unwrap(),
@@ -89,6 +94,14 @@ where
         };
         let len = packet.try_write(&mut self.send_buffer, ())?;
         self.socket.send(&self.send_buffer[..len]).await?;
+        match self.acks.wait().await {
+            Message::RegAck(RegAck {
+                topic_id, code: ReturnCode::Accepted, ..
+            }) => {
+                return Ok(topic_id);
+            },
+            _ => Err(MqttSnClientError::AckError)
+        }
 
         // lag en no_std versjon av waitmap, lag eventloop som legger
         // inn ack der etterhvert som de blir tilgjengelige.
@@ -115,7 +128,8 @@ impl Iterator for MsgId {
 pub enum MqttSnClientError {
     ModemError,
     SocketError,
-    CodecError
+    CodecError,
+    AckError,
 }
 
 impl From<nrf_modem::Error> for MqttSnClientError {
