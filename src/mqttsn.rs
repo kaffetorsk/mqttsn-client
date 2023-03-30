@@ -65,7 +65,6 @@ where
         } else {
             topic_id = self.register(&topic).await?;
             self.topics.insert((TopicIdType::Id, topic_id), topic);
-            // Register new topic
         }
 
 
