@@ -28,9 +28,7 @@ impl TryFrom<u8> for TopicIdType {
 }
 
 pub struct MqttSnClient<S> {
-    // rx: fn(&mut [u8]) -> Result<(&mut [u8], SocketAddr), Error>,
-    // tx: fn(&[u8]) -> Result<(), Error>,
-    client_id: String<32>,
+    client_id: ClientId,
     username: Option<String<32>>,
     password: Option<String<32>>,
     msg_id: MsgId,
@@ -47,13 +45,13 @@ where
     S: SendBytes + RecieveBytes
 {
     pub fn new(
-        device_id: &String<32>,
+        client_id: &str,
         username: Option<String<32>>,
         password: Option<String<32>>,
         socket: S
     ) -> Result<MqttSnClient<S>, Error> {
         Ok(MqttSnClient {
-            client_id: device_id.clone(),
+            client_id: client_id.into(),
             username,
             password,
             msg_id: MsgId {last_id: 0},
@@ -69,8 +67,8 @@ where
     pub async fn recieve(&mut self) -> Result<Option<Message>, Error> {
         // get acks and publish, push to ackmap and message queue
         // return other types
-        // add timeout here with select?
-        match Message::try_read(self.socket.recv(&mut self.recv_buffer).await?, ()) {
+        let mut buffer = [0u8; 1024];
+        match Message::try_read(self.socket.recv(&mut buffer).await?, ()) {
             Ok((Message::RegAck(msg), _)) => self.acks.insert(msg.msg_id, Message::RegAck(msg)).await?,
             Ok((Message::SubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::SubAck(msg)).await?,
             Ok((Message::PubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::PubAck(msg)).await?,
@@ -80,6 +78,21 @@ where
             _ => return Err(MqttSnClientError::ParseError),
         };
         Ok(None)
+    }
+
+    pub async fn send(&self, msg: Message) -> Result<(), Error> {
+        let mut buffer = [0u8; 1024];
+        let len = msg.try_write(&mut buffer, ())?;
+        self.socket.send(&self.send_buffer[..len]).await?;
+        Ok(())
+    }
+
+    pub async fn ping(&mut self) -> Result<(), Error>{
+        self.send(PingReq {client_id: self.client_id.clone()}.into()).await?;
+        match self.recieve().await {
+            Ok(Some(Message::PingResp(_))) => Ok(()),
+            _ => Err(Error::NoPingResponse)
+        }
     }
 
     pub async fn publish(&mut self, msg: MqttMessage) -> Result<(), Error> {
@@ -103,9 +116,8 @@ where
             data,
 
         };
-        //bruke tokio serde?
-        let len = packet.try_write(&mut self.send_buffer, ())?;
-        self.socket.send(&self.send_buffer[..len]).await?;
+
+        self.send(packet.into()).await?;
         Ok(())
     }
 
@@ -116,8 +128,8 @@ where
             msg_id,
             topic_name: TopicName::from(&topic)
         };
-        let len = packet.try_write(&mut self.send_buffer, ())?;
-        self.socket.send(&self.send_buffer[..len]).await?;
+        self.send(packet.into()).await?;
+
         match self.acks.wait(msg_id).await? {
             Message::RegAck(RegAck {
                 topic_id, code: ReturnCode::Accepted, ..
@@ -126,11 +138,11 @@ where
             },
             _ => Err(MqttSnClientError::AckError)
         }
-
-        // lag en no_std versjon av waitmap, lag eventloop som legger
-        // inn ack der etterhvert som de blir tilgjengelige.
     }
 
+    async fn connect(&mut self, topic: &String<256>) -> Result<(), Error> {
+        Ok(())
+    }
 }
 
 pub struct MqttMessage {
@@ -142,6 +154,9 @@ pub struct MqttMessage {
 }
 
 impl MqttMessage {
+    pub fn new(topic: String<256>, payload: String<256>) -> Self {
+        Self { topic_id: None, msg_id: None, qos: None, topic, payload }
+    }
     fn from_publish(
         msg: Publish,
         topics: &BiMap<(TopicIdType, u16), String<256>>
@@ -189,6 +204,7 @@ pub enum MqttSnClientError {
     UnknownError,
     ParseError,
     TopicNotRegistered,
+    NoPingResponse,
 }
 
 impl From<nrf_modem::Error> for MqttSnClientError {
