@@ -140,8 +140,19 @@ where
         }
     }
 
-    async fn connect(&mut self, topic: &String<256>) -> Result<(), Error> {
-        Ok(())
+    pub async fn connect(&mut self) -> Result<(), Error> {
+        let packet = Connect {
+            flags: Flags::default(),
+            duration: 120,
+            client_id: self.client_id.clone()
+        };
+
+        self.send(packet.into()).await?;
+
+        match self.recieve().await {
+            Ok(Some(Message::ConnAck(ConnAck{code: ReturnCode::Accepted}))) => Ok(()),
+            _ => Err(Error::AckError)
+        }
     }
 }
 

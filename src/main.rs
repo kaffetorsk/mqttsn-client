@@ -21,7 +21,7 @@ fn main() {
             let mut mqtt_client = MqttSnClient::new(
                 &String::<32>::from("test1"), None, None, socket
             ).unwrap();
-
+            mqtt_client.connect().await.unwrap();
 
 
 
