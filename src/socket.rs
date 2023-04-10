@@ -14,19 +14,20 @@ impl From<std::io::Error> for SocketError {
 }
 
 pub trait SendBytes {
-    async fn send(&self, buf: &[u8]) -> Result<(), SocketError>;
+    async fn send(&mut self, buf: &[u8]) -> Result<(), SocketError>;
 }
 
 pub trait RecieveBytes {
-    async fn recv<'a>(&self, buf: &'a mut [u8]) -> Result<&'a mut [u8], SocketError>;
+    async fn recv<'a>(&mut self, buf: &'a mut [u8]) -> Result<&'a mut [u8], SocketError>;
 }
+
 
 #[cfg(feature = "std")]
 pub struct TokioUdp(pub UdpSocket);
 
 #[cfg(feature = "std")]
 impl SendBytes for TokioUdp {
-    async fn send(&self, buf: &[u8]) -> Result<(), SocketError> {
+    async fn send(&mut self, buf: &[u8]) -> Result<(), SocketError> {
         self.0.send(buf).await?;
         Ok(())
     }
@@ -34,7 +35,7 @@ impl SendBytes for TokioUdp {
 
 #[cfg(feature = "std")]
 impl RecieveBytes for TokioUdp {
-    async fn recv<'a>(&self, buf: &'a mut [u8]) -> Result<&'a mut [u8], SocketError> {
+    async fn recv<'a>(&mut self, buf: &'a mut [u8]) -> Result<&'a mut [u8], SocketError> {
         Ok(self.0.recv(buf).await.map(|len| &mut buf[..len])?)
     }
 }

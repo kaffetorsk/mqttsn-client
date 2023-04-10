@@ -5,3 +5,4 @@
 pub mod mqttsn;
 pub mod socket;
 pub(crate) mod ackmap;
+pub mod dtls;

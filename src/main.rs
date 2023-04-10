@@ -1,34 +1,29 @@
-use tokio::net::UdpSocket;
+// use tokio::net::UdpSocket;
 use mqttsn_client::mqttsn::{MqttSnClient, MqttMessage};
-use mqttsn_client::socket::TokioUdp;
+// use mqttsn_client::socket::TokioUdp;
+use mqttsn_client::dtls::DtlsSocket;
 use heapless::String;
-use tokio::{runtime, task};
+use tokio::time::{sleep, Duration};
+use log::*;
 
-
-
-fn main() {
-    // Create the runtime
-    let rt = runtime::Builder::new_current_thread()
-        .build().unwrap();
-
-    // Spawn the root task
-    rt.block_on(async {
-        // Construct a local task set that can run `!Send` futures.
-        let local = task::LocalSet::new();
-        // Run the local task set.
-        local.run_until(async move {
-            let socket = TokioUdp(UdpSocket::bind("127.0.0.1:3400").await.unwrap());
-            let mut mqtt_client = MqttSnClient::new(
-                &String::<32>::from("test1"), None, None, socket
-            ).unwrap();
-            mqtt_client.connect().await.unwrap();
-
-
-
-
-            mqtt_client.publish(
-                MqttMessage::new("test/testing".into(), "blablabla".into())
-            ).await.unwrap();
-        }).await;
-    })
+#[tokio::main]
+async fn main() {
+    env_logger::init();
+    // let socket = TokioUdp(UdpSocket::bind("127.0.0.1:3400").await.unwrap());
+    let socket = DtlsSocket::new().await.unwrap();
+    let session = socket.connect("127.0.0.1:1234").await.unwrap();
+    let mut mqtt_client = MqttSnClient::new(
+        &String::<32>::from("test1"), session
+    ).unwrap();
+    mqtt_client.connect().await.unwrap();
+    mqtt_client.subscribe("test/recv".into()).await.unwrap();
+    mqtt_client.publish(
+        MqttMessage::new("test/testing".into(), "blablabla".into())
+    ).await.unwrap();
+    loop {
+        if let Some(msg) = mqtt_client.recieve().await.unwrap() {
+            dbg!(&msg);
+        }
+        sleep(Duration::from_secs(5)).await;
+    }
 }

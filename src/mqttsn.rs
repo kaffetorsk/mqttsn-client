@@ -4,6 +4,7 @@ use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
 use bimap::BiMap;
 use byte::{TryRead, TryWrite};
+use log::*;
 
 type Error = MqttSnClientError;
 
@@ -29,15 +30,11 @@ impl TryFrom<u8> for TopicIdType {
 
 pub struct MqttSnClient<S> {
     client_id: ClientId,
-    username: Option<String<32>>,
-    password: Option<String<32>>,
     msg_id: MsgId,
-    send_buffer: [u8; 2048],
-    recv_buffer: [u8; 2048],
     socket: S,
     topics: BiMap<(TopicIdType, u16), String<256>>,
-    acks: AckMap<10>,
-    rx_queue: HistoryBuffer<MqttMessage, 10>,
+    acks: AckMap<16>,
+    rx_queue: HistoryBuffer<MqttMessage, 16>,
 }
 
 impl<S> MqttSnClient<S>
@@ -46,20 +43,14 @@ where
 {
     pub fn new(
         client_id: &str,
-        username: Option<String<32>>,
-        password: Option<String<32>>,
         socket: S
     ) -> Result<MqttSnClient<S>, Error> {
         Ok(MqttSnClient {
             client_id: client_id.into(),
-            username,
-            password,
             msg_id: MsgId {last_id: 0},
-            send_buffer: [0; 2048],
-            recv_buffer: [0; 2048],
             socket,
             topics: BiMap::new(),
-            acks: AckMap::<10>::new(),
+            acks: AckMap::<16>::new(),
             rx_queue: HistoryBuffer::new(),
         })
     }
@@ -80,10 +71,10 @@ where
         Ok(None)
     }
 
-    pub async fn send(&self, msg: Message) -> Result<(), Error> {
+    pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
         let mut buffer = [0u8; 1024];
         let len = msg.try_write(&mut buffer, ())?;
-        self.socket.send(&self.send_buffer[..len]).await?;
+        self.socket.send(&buffer[..len]).await?;
         Ok(())
     }
 
@@ -146,11 +137,52 @@ where
             duration: 120,
             client_id: self.client_id.clone()
         };
+        self.send(packet.into()).await?;
+        match self.recieve().await {
+            Ok(Some(Message::ConnAck(ConnAck{code: ReturnCode::Accepted}))) => Ok(()),
+            _ => Err(Error::AckError)
+        }
+    }
+
+    pub async fn subscribe(&mut self, topic: String<256>) -> Result<(), Error> {
+        let mut flags = Flags::default();
+        let topic_id;
+        if let Some((topic_type, id)) = self.topics.get_by_right(&topic) {
+            topic_id = *id;
+            flags.set_topic_id_type(*topic_type as u8);
+        } else {
+            topic_id = self.register(&topic).await?;
+            self.topics.insert((TopicIdType::Id, topic_id), topic.clone());
+        }
+        let msg_id = self.msg_id.next().unwrap();
+        let packet = Subscribe {
+            flags: Flags::default(),
+            msg_id,
+            topic: TopicNameOrId::Id(topic_id),
+        };
+
+        self.send(packet.into()).await?;
+
+        match self.acks.wait(msg_id).await? {
+            Message::SubAck(SubAck {
+                code: ReturnCode::Accepted, ..
+            }) => {
+                return Ok(());
+            },
+            _ => Err(MqttSnClientError::AckError)
+        }
+    }
+
+    /// If duration is set, then client will go to sleep, with keep-alive < duration
+    pub async fn disconnect(&mut self, duration: Option<u16>) -> Result<(), Error> {
+        let packet = Disconnect {
+            duration
+        };
 
         self.send(packet.into()).await?;
 
         match self.recieve().await {
-            Ok(Some(Message::ConnAck(ConnAck{code: ReturnCode::Accepted}))) => Ok(()),
+            Ok(Some(Message::Disconnect(_))) => Ok(()),
             _ => Err(Error::AckError)
         }
     }
