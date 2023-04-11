@@ -132,6 +132,7 @@ where
     }
 
     pub async fn connect(&mut self) -> Result<(), Error> {
+        info!("Connecting MQTT-SN");
         let packet = Connect {
             flags: Flags::default(),
             duration: 120,
@@ -151,7 +152,9 @@ where
             topic_id = *id;
             flags.set_topic_id_type(*topic_type as u8);
         } else {
+            debug!("1");
             topic_id = self.register(&topic).await?;
+            debug!("2");
             self.topics.insert((TopicIdType::Id, topic_id), topic.clone());
         }
         let msg_id = self.msg_id.next().unwrap();

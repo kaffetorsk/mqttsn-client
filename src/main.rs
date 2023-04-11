@@ -12,14 +12,18 @@ async fn main() {
     // let socket = TokioUdp(UdpSocket::bind("127.0.0.1:3400").await.unwrap());
     let socket = DtlsSocket::new().await.unwrap();
     let session = socket.connect("127.0.0.1:1234").await.unwrap();
+    info!("DTLS connected");
     let mut mqtt_client = MqttSnClient::new(
         &String::<32>::from("test1"), session
     ).unwrap();
     mqtt_client.connect().await.unwrap();
+    info!("MQTT-SN connected");
     mqtt_client.subscribe("test/recv".into()).await.unwrap();
+    debug!("subscribed");
     mqtt_client.publish(
         MqttMessage::new("test/testing".into(), "blablabla".into())
     ).await.unwrap();
+    debug!("published");
     loop {
         if let Some(msg) = mqtt_client.recieve().await.unwrap() {
             dbg!(&msg);

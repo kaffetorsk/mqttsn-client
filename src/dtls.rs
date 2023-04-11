@@ -118,7 +118,7 @@ impl DtlsSocket {
     pub async fn connect(&self,
             addr: impl ToSocketAddrs,
         ) -> Result<DtlsSession, Box<dyn error::Error>> {
-
+        info!("Connecting DTLS");
         Ok(DtlsSession(self.client.connect(addr, Some(self.context.clone())).await?))
     }
 }
