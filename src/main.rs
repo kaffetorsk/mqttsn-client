@@ -26,6 +26,7 @@ async fn main() {
     debug!("published");
     loop {
         if let Some(msg) = mqtt_client.recieve().await.unwrap() {
+            info!("new message");
             dbg!(&msg);
         }
         sleep(Duration::from_secs(5)).await;

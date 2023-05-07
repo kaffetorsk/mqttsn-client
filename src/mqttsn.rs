@@ -1,6 +1,6 @@
 use heapless::{String, HistoryBuffer};
 use crate::socket::{SendBytes, RecieveBytes, SocketError};
-use crate::ackmap::{AckMap, AckMapError};
+// use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
 use bimap::BiMap;
 use byte::{TryRead, TryWrite};
@@ -33,7 +33,7 @@ pub struct MqttSnClient<S> {
     msg_id: MsgId,
     socket: S,
     topics: BiMap<(TopicIdType, u16), String<256>>,
-    acks: AckMap<16>,
+    // acks: AckMap<16>,
     rx_queue: HistoryBuffer<MqttMessage, 16>,
 }
 
@@ -50,7 +50,7 @@ where
             msg_id: MsgId {last_id: 0},
             socket,
             topics: BiMap::new(),
-            acks: AckMap::<16>::new(),
+            // acks: AckMap::<16>::new(),
             rx_queue: HistoryBuffer::new(),
         })
     }
@@ -60,10 +60,10 @@ where
         // return other types
         let mut buffer = [0u8; 1024];
         match Message::try_read(self.socket.recv(&mut buffer).await?, ()) {
-            Ok((Message::RegAck(msg), _)) => self.acks.insert(msg.msg_id, Message::RegAck(msg)).await?,
-            Ok((Message::SubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::SubAck(msg)).await?,
-            Ok((Message::PubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::PubAck(msg)).await?,
-            Ok((Message::UnsubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::UnsubAck(msg)).await?,
+            // Ok((Message::RegAck(msg), _)) => self.acks.insert(msg.msg_id, Message::RegAck(msg)).await?,
+            // Ok((Message::SubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::SubAck(msg)).await?,
+            // Ok((Message::PubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::PubAck(msg)).await?,
+            // Ok((Message::UnsubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::UnsubAck(msg)).await?,
             Ok((Message::Publish(msg), _)) => self.rx_queue.write(MqttMessage::from_publish(msg, &self.topics)?),
             Ok((msg, _)) => return Ok(Some(msg)),
             _ => return Err(MqttSnClientError::ParseError),
@@ -74,6 +74,7 @@ where
     pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
         let mut buffer = [0u8; 1024];
         let len = msg.try_write(&mut buffer, ())?;
+        dbg!(&buffer[..len]);
         self.socket.send(&buffer[..len]).await?;
         Ok(())
     }
@@ -121,14 +122,22 @@ where
         };
         self.send(packet.into()).await?;
 
-        match self.acks.wait(msg_id).await? {
-            Message::RegAck(RegAck {
+        // må pulle gjentatte ganger i et gitt tidsinterval
+        match self.recieve().await {
+            Ok(Some(Message::RegAck(RegAck {
                 topic_id, code: ReturnCode::Accepted, ..
-            }) => {
-                return Ok(topic_id);
-            },
-            _ => Err(MqttSnClientError::AckError)
+            }))) => Ok(topic_id),
+            _ => Err(Error::AckError)
         }
+
+        // match self.acks.wait(msg_id).await? {
+        //     Message::RegAck(RegAck {
+        //         topic_id, code: ReturnCode::Accepted, ..
+        //     }) => {
+        //         return Ok(topic_id);
+        //     },
+        //     _ => Err(MqttSnClientError::AckError)
+        // }
     }
 
     pub async fn connect(&mut self) -> Result<(), Error> {
@@ -158,18 +167,21 @@ where
             self.topics.insert((TopicIdType::Id, topic_id), topic.clone());
         }
         let msg_id = self.msg_id.next().unwrap();
+        let mut flags = Flags::default();
+        flags.set_topic_id_type(1);
         let packet = Subscribe {
-            flags: Flags::default(),
+            flags,
             msg_id,
             topic: TopicNameOrId::Id(topic_id),
         };
+        dbg!(&packet);
 
         self.send(packet.into()).await?;
 
-        match self.acks.wait(msg_id).await? {
-            Message::SubAck(SubAck {
+        match self.recieve().await? {
+            Some(Message::SubAck(SubAck {
                 code: ReturnCode::Accepted, ..
-            }) => {
+            })) => {
                 return Ok(());
             },
             _ => Err(MqttSnClientError::AckError)
@@ -271,11 +283,11 @@ impl From<byte::Error> for MqttSnClientError {
     }
 }
 
-impl From<AckMapError> for MqttSnClientError {
-    fn from(_e: AckMapError) -> Self {
-        MqttSnClientError::AckError
-    }
-}
+// impl From<AckMapError> for MqttSnClientError {
+//     fn from(_e: AckMapError) -> Self {
+//         MqttSnClientError::AckError
+//     }
+// }
 
 impl From<()> for MqttSnClientError {
     fn from(_e: ()) -> Self {
