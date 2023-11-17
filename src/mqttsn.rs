@@ -5,6 +5,7 @@ use mqtt_sn::defs::*;
 use bimap::BiMap;
 use byte::{TryRead, TryWrite};
 use log::*;
+use embassy_sync::pubsub::{PubSubChannel, DynSubscriber, DynPublisher};
 
 type Error = MqttSnClientError;
 
@@ -28,24 +29,49 @@ impl TryFrom<u8> for TopicIdType {
     }
 }
 
-pub struct MqttSnClient<S> {
+pub struct MqttSnClient<'a, S> {
     client_id: ClientId,
     msg_id: MsgId,
-    socket: S,
     topics: BiMap<(TopicIdType, u16), String<256>>,
-    // acks: AckMap<16>,
-    rx_queue: HistoryBuffer<MqttMessage, 16>,
+    //rx_queue: DynSubscriber<'a, MqttMessage>,
+    //tx_queue: DynPublisher<'a, MqttMessage>,
 }
 
-impl<S> MqttSnClient<S>
+impl<S> MqttSnClient<'_, S>
 where
     S: SendBytes + RecieveBytes
 {
     pub fn new(
         client_id: &str,
         socket: S
-    ) -> Result<MqttSnClient<S>, Error> {
-        Ok(MqttSnClient {
+    ) -> Result<(MqttSnClient, MqttSnEventLoop<S>), Error> {
+        let event_loop = MqttSnEventLoop::new(client_id, socket);
+        let client = MqttSnClient {
+            client_id: client_id.into(),
+            msg_id: MsgId {last_id: 0},
+            topics: BiMap::new(),
+            // acks: AckMap::<16>::new(),
+            //rx_queue: HistoryBuffer::new(),
+        }
+        Ok(client, event_loop)
+    }
+}
+
+pub struct MqttSnEventLoop<S> {
+    socket: S,
+    // acks: AckMap<16>,
+    rx_queue: HistoryBuffer<MqttMessage, 16>,
+}
+
+impl<S> MqttSnEventLoop<S>
+where
+    S: SendBytes + RecieveBytes
+{
+    pub fn new(
+        client_id: &str,
+        socket: S
+    ) -> Result<MqttSnEventLoop<S>, Error> {
+        Ok(MqttSnEventLoop {
             client_id: client_id.into(),
             msg_id: MsgId {last_id: 0},
             socket,
@@ -74,7 +100,6 @@ where
     pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
         let mut buffer = [0u8; 1024];
         let len = msg.try_write(&mut buffer, ())?;
-        dbg!(&buffer[..len]);
         self.socket.send(&buffer[..len]).await?;
         Ok(())
     }
@@ -161,9 +186,7 @@ where
             topic_id = *id;
             flags.set_topic_id_type(*topic_type as u8);
         } else {
-            debug!("1");
             topic_id = self.register(&topic).await?;
-            debug!("2");
             self.topics.insert((TopicIdType::Id, topic_id), topic.clone());
         }
         let msg_id = self.msg_id.next().unwrap();
@@ -174,7 +197,6 @@ where
             msg_id,
             topic: TopicNameOrId::Id(topic_id),
         };
-        dbg!(&packet);
 
         self.send(packet.into()).await?;
 
@@ -203,6 +225,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct MqttMessage {
     topic_id: Option<u16>,
     msg_id: Option<u16>,
