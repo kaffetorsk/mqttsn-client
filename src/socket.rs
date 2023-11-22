@@ -17,7 +17,7 @@ pub trait SendBytes {
     async fn send(&mut self, buf: &[u8]) -> Result<(), SocketError>;
 }
 
-pub trait RecieveBytes {
+pub trait ReceiveBytes {
     async fn recv<'a>(&mut self, buf: &'a mut [u8]) -> Result<&'a mut [u8], SocketError>;
 }
 
@@ -34,7 +34,7 @@ impl SendBytes for TokioUdp {
 }
 
 #[cfg(feature = "std")]
-impl RecieveBytes for TokioUdp {
+impl ReceiveBytes for TokioUdp {
     async fn recv<'a>(&mut self, buf: &'a mut [u8]) -> Result<&'a mut [u8], SocketError> {
         Ok(self.0.recv(buf).await.map(|len| &mut buf[..len])?)
     }

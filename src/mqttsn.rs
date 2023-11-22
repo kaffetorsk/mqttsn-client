@@ -1,12 +1,22 @@
 use heapless::{String, HistoryBuffer};
-use crate::socket::{SendBytes, RecieveBytes, SocketError};
+use crate::socket::{SendBytes, ReceiveBytes, SocketError};
 // use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
 use bimap::BiMap;
 use byte::{TryRead, TryWrite};
+use embassy_futures::select::{select, Either};
+use embassy_sync::pubsub::subscriber::DynSubscriber;
+use embassy_sync::pubsub::publisher::DynPublisher;
+
+#[cfg(feature = "std")]
 use log::*;
 
+#[cfg(feature = "no_std")]
+use defmt::*;
+
 type Error = MqttSnClientError;
+
+
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 #[repr(u8)]
@@ -39,7 +49,7 @@ pub struct MqttSnClient<S> {
 
 impl<S> MqttSnClient<S>
 where
-    S: SendBytes + RecieveBytes
+    S: SendBytes + ReceiveBytes
 {
     pub fn new(
         client_id: &str,
@@ -55,7 +65,28 @@ where
         })
     }
 
-    pub async fn recieve(&mut self) -> Result<Option<Message>, Error> {
+    pub async fn run(
+        &mut self,
+        mut rx: DynSubscriber<'_, MqttMessage>,
+        tx: DynPublisher<'_, MqttMessage>,
+    ) {
+        loop {
+            match select(self.receive(), rx.next_message_pure()).await {
+                Either::First(msg) => {
+                    // Handle message received from the client's receive method
+                    if let Ok(Some(msg)) = msg {
+                        // Process the message
+                        // ...
+                    }
+                },
+                Either::Second(msg) => {
+                    // Handle message received from the user (via DynSubscriber)
+                }
+            }
+        }
+    }
+
+    pub async fn receive(&mut self) -> Result<Option<Message>, Error> {
         // get acks and publish, push to ackmap and message queue
         // return other types
         let mut buffer = [0u8; 1024];
@@ -81,7 +112,7 @@ where
 
     pub async fn ping(&mut self) -> Result<(), Error>{
         self.send(PingReq {client_id: self.client_id.clone()}.into()).await?;
-        match self.recieve().await {
+        match self.receive().await {
             Ok(Some(Message::PingResp(_))) => Ok(()),
             _ => Err(Error::NoPingResponse)
         }
@@ -123,7 +154,7 @@ where
         self.send(packet.into()).await?;
 
         // må pulle gjentatte ganger i et gitt tidsinterval
-        match self.recieve().await {
+        match self.receive().await {
             Ok(Some(Message::RegAck(RegAck {
                 topic_id, code: ReturnCode::Accepted, ..
             }))) => Ok(topic_id),
@@ -148,7 +179,7 @@ where
             client_id: self.client_id.clone()
         };
         self.send(packet.into()).await?;
-        match self.recieve().await {
+        match self.receive().await {
             Ok(Some(Message::ConnAck(ConnAck{code: ReturnCode::Accepted}))) => Ok(()),
             _ => Err(Error::AckError)
         }
@@ -178,7 +209,7 @@ where
 
         self.send(packet.into()).await?;
 
-        match self.recieve().await? {
+        match self.receive().await? {
             Some(Message::SubAck(SubAck {
                 code: ReturnCode::Accepted, ..
             })) => {
@@ -196,13 +227,14 @@ where
 
         self.send(packet.into()).await?;
 
-        match self.recieve().await {
+        match self.receive().await {
             Ok(Some(Message::Disconnect(_))) => Ok(()),
             _ => Err(Error::AckError)
         }
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct MqttMessage {
     topic_id: Option<u16>,
     msg_id: Option<u16>,

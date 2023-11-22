@@ -225,6 +225,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fcaabb2fef8c910e7f4c7ce9f67a1283a1715879a7c230ca9d6d1ae31f16d91"
 
 [[package]]
+name = "embassy-futures"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f878075b9794c1e4ac788c95b728f26aa6366d32eeb10c7051389f898f7d067"
+
+[[package]]
 name = "embassy-sync"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -600,6 +606,8 @@ dependencies = [
  "bimap",
  "byte",
  "cstr",
+ "defmt",
+ "embassy-futures",
  "embassy-sync",
  "env_logger",
  "format_no_std",
