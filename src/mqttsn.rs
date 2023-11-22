@@ -1,13 +1,28 @@
 use heapless::{String, HistoryBuffer};
-use crate::socket::{SendBytes, RecieveBytes, SocketError};
-// use crate::ackmap::{AckMap, AckMapError};
+use heapless::{arc_pool, pool::arc::{Arc, ArcBlock}};
+use crate::socket::{SendBytes, RecieveBytes, SocketError, self};
+use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
 use bimap::BiMap;
 use byte::{TryRead, TryWrite};
-use log::*;
 use embassy_sync::pubsub::{PubSubChannel, DynSubscriber, DynPublisher};
-
+use embassy_sync::mutex::Mutex;
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 type Error = MqttSnClientError;
+
+
+use defmt::*;
+
+// #[cfg(feature = "std")]
+// use log::*;
+
+arc_pool!(P: MqttSnClient<S>);
+
+let block: &'static mut ArcBlock<MqttSnClient<S>> = unsafe {
+    static mut B: ArcBlock<MqttSnClient<S>> = ArcBlock::new();
+    &mut B
+};
+
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 #[repr(u8)]
@@ -29,80 +44,65 @@ impl TryFrom<u8> for TopicIdType {
     }
 }
 
-pub struct MqttSnClient<'a, S> {
+pub struct MqttSnClient<S> {
     client_id: ClientId,
     msg_id: MsgId,
     topics: BiMap<(TopicIdType, u16), String<256>>,
     //rx_queue: DynSubscriber<'a, MqttMessage>,
     //tx_queue: DynPublisher<'a, MqttMessage>,
+    socket: Arc<Mutex<NoopRawMutex, S>>,
+    acks: AckMap<16>,
+    //event_loop: MqttSnEventLoop<S>
 }
 
-impl<S> MqttSnClient<'_, S>
+pub fn initialize<S: SendBytes + RecieveBytes>(
+    socket: S, client_id: &str
+    ) -> (MqttSnClient<S>, MqttSnEventLoop<S>) {
+    let acks = AckMap::<16>::new();
+    let topics = BiMap::new();
+    let socket = Mutex::new(socket);
+    let client = MqttSnClient::new(client_id, &socket, acks, topics);
+    let event_loop = MqttSnEventLoop::new(&socket, acks, topics);
+    (client, event_loop)
+}
+
+impl<S> MqttSnClient<S>
 where
     S: SendBytes + RecieveBytes
 {
     pub fn new(
         client_id: &str,
-        socket: S
-    ) -> Result<(MqttSnClient, MqttSnEventLoop<S>), Error> {
-        let event_loop = MqttSnEventLoop::new(client_id, socket);
-        let client = MqttSnClient {
+        socket: Arc<Mutex<NoopRawMutex, S>>,
+        acks: AckMap<16>,
+        topics: BiMap<(TopicIdType, u16), String<256>>,
+    ) -> MqttSnClient<S> {
+        MqttSnClient {
             client_id: client_id.into(),
             msg_id: MsgId {last_id: 0},
-            topics: BiMap::new(),
-            // acks: AckMap::<16>::new(),
+            topics,
+            socket,
+            acks,
             //rx_queue: HistoryBuffer::new(),
         }
-        Ok(client, event_loop)
-    }
-}
-
-pub struct MqttSnEventLoop<S> {
-    socket: S,
-    // acks: AckMap<16>,
-    rx_queue: HistoryBuffer<MqttMessage, 16>,
-}
-
-impl<S> MqttSnEventLoop<S>
-where
-    S: SendBytes + RecieveBytes
-{
-    pub fn new(
-        client_id: &str,
-        socket: S
-    ) -> Result<MqttSnEventLoop<S>, Error> {
-        Ok(MqttSnEventLoop {
-            client_id: client_id.into(),
-            msg_id: MsgId {last_id: 0},
-            socket,
-            topics: BiMap::new(),
-            // acks: AckMap::<16>::new(),
-            rx_queue: HistoryBuffer::new(),
-        })
-    }
-
-    pub async fn recieve(&mut self) -> Result<Option<Message>, Error> {
-        // get acks and publish, push to ackmap and message queue
-        // return other types
-        let mut buffer = [0u8; 1024];
-        match Message::try_read(self.socket.recv(&mut buffer).await?, ()) {
-            // Ok((Message::RegAck(msg), _)) => self.acks.insert(msg.msg_id, Message::RegAck(msg)).await?,
-            // Ok((Message::SubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::SubAck(msg)).await?,
-            // Ok((Message::PubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::PubAck(msg)).await?,
-            // Ok((Message::UnsubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::UnsubAck(msg)).await?,
-            Ok((Message::Publish(msg), _)) => self.rx_queue.write(MqttMessage::from_publish(msg, &self.topics)?),
-            Ok((msg, _)) => return Ok(Some(msg)),
-            _ => return Err(MqttSnClientError::ParseError),
-        };
-        Ok(None)
     }
 
     pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
         let mut buffer = [0u8; 1024];
         let len = msg.try_write(&mut buffer, ())?;
-        self.socket.send(&buffer[..len]).await?;
+        let mut socket = self.socket.lock().await;
+        socket.send(&buffer[..len]).await?;
         Ok(())
     }
+
+    pub async fn recieve(&mut self) -> Result<Option<Message>, Error> {
+        let mut buffer = [0u8; 1024];
+        let mut socket = self.socket.lock().await;
+        match Message::try_read(socket.recv(&mut buffer).await?, ()) {
+            Ok((msg, _)) => return Ok(Some(msg)),
+            _ => return Err(MqttSnClientError::ParseError),
+        };
+        Ok(None)
+    }    
 
     pub async fn ping(&mut self) -> Result<(), Error>{
         self.send(PingReq {client_id: self.client_id.clone()}.into()).await?;
@@ -148,21 +148,21 @@ where
         self.send(packet.into()).await?;
 
         // må pulle gjentatte ganger i et gitt tidsinterval
-        match self.recieve().await {
-            Ok(Some(Message::RegAck(RegAck {
-                topic_id, code: ReturnCode::Accepted, ..
-            }))) => Ok(topic_id),
-            _ => Err(Error::AckError)
-        }
-
-        // match self.acks.wait(msg_id).await? {
-        //     Message::RegAck(RegAck {
+        // match self.recieve().await {
+        //     Ok(Some(Message::RegAck(RegAck {
         //         topic_id, code: ReturnCode::Accepted, ..
-        //     }) => {
-        //         return Ok(topic_id);
-        //     },
-        //     _ => Err(MqttSnClientError::AckError)
+        //     }))) => Ok(topic_id),
+        //     _ => Err(Error::AckError)
         // }
+
+        match self.acks.wait(msg_id).await? {
+            Message::RegAck(RegAck {
+                topic_id, code: ReturnCode::Accepted, ..
+            }) => {
+                return Ok(topic_id);
+            },
+            _ => Err(MqttSnClientError::AckError)
+        }
     }
 
     pub async fn connect(&mut self) -> Result<(), Error> {
@@ -223,6 +223,51 @@ where
             _ => Err(Error::AckError)
         }
     }
+}
+
+pub struct MqttSnEventLoop<S> {
+    
+    socket: Mutex<NoopRawMutex, S>,
+    acks: AckMap<16>,
+    topics: BiMap<(TopicIdType, u16), String<256>>,
+    rx_queue: HistoryBuffer<MqttMessage, 16>,
+}
+
+impl<S> MqttSnEventLoop<S>
+where
+    S: SendBytes + RecieveBytes
+{
+    pub fn new(
+        socket: &Mutex<NoopRawMutex, S>,
+        acks: AckMap<16>,
+        topics: BiMap<(TopicIdType, u16), String<256>>,
+    ) -> MqttSnEventLoop<S> {
+        MqttSnEventLoop {
+            socket,
+            acks,
+            topics,
+            rx_queue: HistoryBuffer::new(),
+        }
+    }
+
+    pub async fn next(&mut self) -> Result<Option<Message>, Error> {
+        // get acks and publish, push to ackmap and message queue
+        // return other types
+        let mut buffer = [0u8; 1024];
+        let mut socket = self.socket.lock().await;
+        match Message::try_read(socket.recv(&mut buffer).await?, ()) {
+            Ok((Message::RegAck(msg), _)) => self.acks.insert(msg.msg_id, Message::RegAck(msg)).await?,
+            Ok((Message::SubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::SubAck(msg)).await?,
+            Ok((Message::PubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::PubAck(msg)).await?,
+            Ok((Message::UnsubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::UnsubAck(msg)).await?,
+            Ok((Message::Publish(msg), _)) => self.rx_queue.write(MqttMessage::from_publish(msg, &self.topics)?),
+            Ok((msg, _)) => return Ok(Some(msg)),
+            _ => return Err(MqttSnClientError::ParseError),
+        };
+        Ok(None)
+    }
+
+   
 }
 
 #[derive(Clone)]
@@ -306,11 +351,11 @@ impl From<byte::Error> for MqttSnClientError {
     }
 }
 
-// impl From<AckMapError> for MqttSnClientError {
-//     fn from(_e: AckMapError) -> Self {
-//         MqttSnClientError::AckError
-//     }
-// }
+impl From<AckMapError> for MqttSnClientError {
+    fn from(_e: AckMapError) -> Self {
+        MqttSnClientError::AckError
+    }
+}
 
 impl From<()> for MqttSnClientError {
     fn from(_e: ()) -> Self {

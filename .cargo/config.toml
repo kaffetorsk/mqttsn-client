@@ -1,2 +1,12 @@
 [env]
 RUST_LOG = "trace"
+
+[build]
+target = "thumbv8m.main-none-eabihf"
+# target = "x86_64-unknown-linux-gnu"
+# target = "i686-unknown-linux-gnu"
+
+[target.thumbv8m.main-none-eabihf]
+rustflags = [
+    "--cfg", "feature=\"no_std\""
+]
