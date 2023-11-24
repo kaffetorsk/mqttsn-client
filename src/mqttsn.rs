@@ -1,4 +1,5 @@
-use heapless::{String, HistoryBuffer};
+// use heapless::{String, HistoryBuffer};
+use heapless::String;
 use crate::socket::{SendBytes, ReceiveBytes, SocketError};
 // use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
@@ -7,6 +8,7 @@ use byte::{TryRead, TryWrite};
 use embassy_futures::select::{select, Either};
 use embassy_sync::pubsub::subscriber::DynSubscriber;
 use embassy_sync::pubsub::publisher::DynPublisher;
+use embassy_time::{with_timeout, Duration};
 
 #[cfg(feature = "std")]
 use log::*;
@@ -14,9 +16,10 @@ use log::*;
 #[cfg(feature = "no_std")]
 use defmt::*;
 
+const T_RETRY: u8 = 10;
+const N_RETRY: u8 = 10;
+
 type Error = MqttSnClientError;
-
-
 
 #[derive(Hash, PartialEq, Eq, Clone, Copy, PartialOrd, Ord)]
 #[repr(u8)]
@@ -44,7 +47,7 @@ pub struct MqttSnClient<S> {
     socket: S,
     topics: BiMap<(TopicIdType, u16), String<256>>,
     // acks: AckMap<16>,
-    rx_queue: HistoryBuffer<MqttMessage, 16>,
+    // rx_queue: HistoryBuffer<MqttMessage, 16>,
 }
 
 impl<S> MqttSnClient<S>
@@ -61,7 +64,7 @@ where
             socket,
             topics: BiMap::new(),
             // acks: AckMap::<16>::new(),
-            rx_queue: HistoryBuffer::new(),
+            // rx_queue: HistoryBuffer::new(),
         })
     }
 
@@ -74,13 +77,14 @@ where
             match select(self.receive(), rx.next_message_pure()).await {
                 Either::First(msg) => {
                     // Handle message received from the client's receive method
-                    if let Ok(Some(msg)) = msg {
-                        // Process the message
-                        // ...
+                    match msg {
+                        Ok(Some(Message::Publish(msg))) => tx.publish_immediate(MqttMessage::from_publish(msg, &self.topics).unwrap()),
+                        _ => (),
                     }
                 },
                 Either::Second(msg) => {
                     // Handle message received from the user (via DynSubscriber)
+                    self.publish(msg).await.unwrap();
                 }
             }
         }
@@ -95,11 +99,11 @@ where
             // Ok((Message::SubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::SubAck(msg)).await?,
             // Ok((Message::PubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::PubAck(msg)).await?,
             // Ok((Message::UnsubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::UnsubAck(msg)).await?,
-            Ok((Message::Publish(msg), _)) => self.rx_queue.write(MqttMessage::from_publish(msg, &self.topics)?),
+            //Ok((Message::Publish(msg), _)) => self.rx_queue.write(MqttMessage::from_publish(msg, &self.topics)?),
             Ok((msg, _)) => return Ok(Some(msg)),
             _ => return Err(MqttSnClientError::ParseError),
         };
-        Ok(None)
+        // Ok(None)
     }
 
     pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
@@ -109,6 +113,8 @@ where
         self.socket.send(&buffer[..len]).await?;
         Ok(())
     }
+
+    pub async fn get_ack()
 
     pub async fn ping(&mut self) -> Result<(), Error>{
         self.send(PingReq {client_id: self.client_id.clone()}.into()).await?;
@@ -128,24 +134,38 @@ where
             topic_id = self.register(&msg.topic).await?;
             self.topics.insert((TopicIdType::Id, topic_id), msg.topic);
         }
+        let next_msg_id = self.msg_id.next();
 
         let mut data = PublishData::new();
         data.push_str(&msg.payload)?;
 
-        let packet = Publish {
-            flags,
-            topic_id: topic_id,
-            msg_id: self.msg_id.next().unwrap(),
-            data,
-
-        };
+        let packet = Publish { flags, topic_id, msg_id: next_msg_id, data };
 
         self.send(packet.into()).await?;
+
+        // Get ACK for QoS 1 & 2, retry according to protocol
+        match msg.qos {
+            Some(qos) if qos > 0 => {
+                for _ in 1..N_RETRY {
+                    match with_timeout(
+                        Duration::from_secs(T_RETRY.into()),
+                        self.receive()).await
+                    {
+                        Ok(Ok(Some(Message::PubAck(PubAck {
+                            msg_id, code: ReturnCode::Accepted, ..
+                        })))) if msg_id == next_msg_id => return Ok(()),
+                        _ => ()
+                    }
+                }
+                return Err(MqttSnClientError::AckError);
+            },
+            _ => ()
+        }
         Ok(())
     }
 
     async fn register(&mut self, topic: &String<256>) -> Result<u16, Error> {
-        let msg_id = self.msg_id.next().unwrap();
+        let msg_id = self.msg_id.next();
         let packet = Register {
             topic_id: 0,
             msg_id,
@@ -197,7 +217,7 @@ where
             debug!("2");
             self.topics.insert((TopicIdType::Id, topic_id), topic.clone());
         }
-        let msg_id = self.msg_id.next().unwrap();
+        let msg_id = self.msg_id.next();
         let mut flags = Flags::default();
         flags.set_topic_id_type(1);
         let packet = Subscribe {
@@ -244,8 +264,16 @@ pub struct MqttMessage {
 }
 
 impl MqttMessage {
-    pub fn new(topic: String<256>, payload: String<256>) -> Self {
-        Self { topic_id: None, msg_id: None, qos: None, topic, payload }
+    pub fn new(
+        topic: String<256>,
+        payload: String<256>,
+        qos: Option<u8>
+    ) -> Self {
+        Self {
+            topic_id: None,
+            msg_id: None,
+            qos, topic, payload
+        }
     }
     fn from_publish(
         msg: Publish,
@@ -276,14 +304,21 @@ pub struct MsgId {
     last_id: u16
 }
 
-impl Iterator for MsgId {
-    type Item = u16;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.last_id += 1;
-        Some(self.last_id)
+impl MsgId {
+    fn next(&mut self) -> u16 {
+        self.last_id = self.last_id.wrapping_add(1);
+        self.last_id
     }
 }
+
+// impl Iterator for MsgId {
+//     type Item = u16;
+
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.last_id += 1;
+//         Some(self.last_id)
+//     }
+// }
 
 #[derive(Debug)]
 pub enum MqttSnClientError {

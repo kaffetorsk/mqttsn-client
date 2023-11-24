@@ -4,7 +4,7 @@
 
 pub mod mqttsn;
 pub mod socket;
-pub(crate) mod ackmap;
+// pub(crate) mod ackmap;
 
 #[cfg(not(feature = "no_std"))]
 pub mod dtls;

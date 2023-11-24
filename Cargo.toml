@@ -15,6 +15,7 @@ bimap = { version = "0.6.3", default-features = false }
 byte = "0.2.6"
 embassy-sync = "0.1.0"
 embassy-futures = "0.1.1"
+embassy-time = "0.1.5"
 
 defmt = { version = "0.3", optional = true }
 
