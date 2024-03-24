@@ -10,7 +10,7 @@ no-std-net = "0.6.0"
 format_no_std = "1.0.0"
 nrf-modem = {version = "0.2.1", features = ["defmt"]}
 heapless = "0.7.16"
-mqtt-sn = { version = "0.2.2", path="../rust-mqtt-sn" }
+mqtt-sn = { version = "0.2.2", path="rust-mqtt-sn" }
 bimap = { version = "0.6.3", default-features = false }
 byte = "0.2.6"
 embassy-sync = "0.1.0"
