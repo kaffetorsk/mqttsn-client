@@ -1,0 +1,3 @@
+[submodule "rust-mqtt-sn"]
+	path = rust-mqtt-sn
+	url = https://github.com/tyr84/rust-mqtt-sn.git
