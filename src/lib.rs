@@ -7,4 +7,8 @@ pub mod socket;
 // pub(crate) mod ackmap;
 
 #[cfg(not(feature = "no_std"))]
-pub mod dtls;
+pub mod dtls_std;
+
+#[cfg(feature = "no_std")]
+pub mod dtls_nrf;
+

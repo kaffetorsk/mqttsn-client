@@ -7,7 +7,7 @@ use log::*;
 use std::error;
 use std::net::ToSocketAddrs;
 use serde_yaml::Value;
-use crate::socket::{SocketError, SendBytes, RecieveBytes};
+use crate::socket::{SocketError, SendBytes, ReceiveBytes};
 use std::ffi::CString;
 
 openssl_errors! {
@@ -132,7 +132,7 @@ impl SendBytes for DtlsSession {
     }
 }
 
-impl RecieveBytes for DtlsSession {
+impl ReceiveBytes for DtlsSession {
     async fn recv<'a>(&mut self, buf: &'a mut [u8]) -> Result<&'a mut [u8], SocketError> {
         Ok(self.0.read(buf).await.map(|len| &mut buf[..len])?)
     }
