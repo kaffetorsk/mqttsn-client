@@ -1,14 +1,13 @@
-// use heapless::{String, HistoryBuffer};
 use heapless::String;
 use crate::socket::{SendBytes, ReceiveBytes, SocketError};
 // use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
-use bimap::BiMap;
 use byte::{TryRead, TryWrite};
 use embassy_futures::select::{select, Either};
 use embassy_sync::pubsub::subscriber::DynSubscriber;
 use embassy_sync::pubsub::publisher::DynPublisher;
 use embassy_time::{with_timeout, Duration};
+use crate::topics::Topics;
 
 #[cfg(feature = "std")]
 use log::*;
@@ -45,9 +44,7 @@ pub struct MqttSnClient<S> {
     client_id: ClientId,
     msg_id: MsgId,
     socket: S,
-    topics: BiMap<(TopicIdType, u16), String<256>>,
-    // acks: AckMap<16>,
-    // rx_queue: HistoryBuffer<MqttMessage, 16>,
+    topics: Topics,
 }
 
 impl<S> MqttSnClient<S>
@@ -62,9 +59,7 @@ where
             client_id: client_id.into(),
             msg_id: MsgId {last_id: 0},
             socket,
-            topics: BiMap::new(),
-            // acks: AckMap::<16>::new(),
-            // rx_queue: HistoryBuffer::new(),
+            topics: Topics::new(),
         })
     }
 
@@ -114,7 +109,7 @@ where
         Ok(())
     }
 
-    pub async fn get_ack()
+    // pub async fn get_ack()
 
     pub async fn ping(&mut self) -> Result<(), Error>{
         self.send(PingReq {client_id: self.client_id.clone()}.into()).await?;
@@ -127,12 +122,12 @@ where
     pub async fn publish(&mut self, msg: MqttMessage) -> Result<(), Error> {
         let mut flags = Flags::default();
         let topic_id;
-        if let Some((topic_type, id)) = self.topics.get_by_right(&msg.topic) {
+        if let Some((topic_type, id)) = self.topics.get_by_topic(&msg.topic) {
             topic_id = *id;
             flags.set_topic_id_type(*topic_type as u8);
         } else {
             topic_id = self.register(&msg.topic).await?;
-            self.topics.insert((TopicIdType::Id, topic_id), msg.topic);
+            self.topics.insert(msg.topic, TopicIdType::Id, topic_id)?
         }
         let next_msg_id = self.msg_id.next();
 
@@ -205,17 +200,18 @@ where
         }
     }
 
-    pub async fn subscribe(&mut self, topic: String<256>) -> Result<(), Error> {
+    pub async fn subscribe(&mut self, topic: &str) -> Result<(), Error> {
         let mut flags = Flags::default();
         let topic_id;
-        if let Some((topic_type, id)) = self.topics.get_by_right(&topic) {
+        let topic = String::<256>::try_from(topic)?;
+        if let Some((topic_type, id)) = self.topics.get_by_topic(&topic) {
             topic_id = *id;
             flags.set_topic_id_type(*topic_type as u8);
         } else {
             debug!("1");
             topic_id = self.register(&topic).await?;
             debug!("2");
-            self.topics.insert((TopicIdType::Id, topic_id), topic.clone());
+            self.topics.insert(topic, TopicIdType::Id, topic_id)?;
         }
         let msg_id = self.msg_id.next();
         let mut flags = Flags::default();
@@ -265,28 +261,28 @@ pub struct MqttMessage {
 
 impl MqttMessage {
     pub fn new(
-        topic: String<256>,
-        payload: String<256>,
+        topic: &str,
+        payload: &str,
         qos: Option<u8>
-    ) -> Self {
-        Self {
+    ) -> Result<Self, Error> {
+        Ok(Self {
             topic_id: None,
             msg_id: None,
-            qos, topic, payload
-        }
+            topic: String::try_from(topic)?,
+            payload: String::try_from(payload)?,
+            qos
+        })
     }
     fn from_publish(
         msg: Publish,
-        topics: &BiMap<(TopicIdType, u16), String<256>>
+        topics: &Topics,
     ) -> Result<Self, Error> {
         Ok(Self {
             topic_id: Some(msg.topic_id),
             msg_id: Some(msg.msg_id),
             qos: Some(msg.flags.qos()),
-            topic: topics.get_by_left(
-                &(msg.flags.topic_id_type().try_into()?, msg.topic_id)
-            ).ok_or(Error::TopicNotRegistered)?.clone(),
-            payload: msg.data.as_str().into(),
+            topic: String::try_from(topics.get_by_id(msg.topic_id)?)?,
+            payload: String::try_from(msg.data.as_str())?,
         })
     }
     pub fn get_ack(&self) -> Option<PubAck> {
@@ -320,7 +316,7 @@ impl MsgId {
 //     }
 // }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Format)]
 pub enum MqttSnClientError {
     ModemError,
     SocketError,
@@ -329,6 +325,7 @@ pub enum MqttSnClientError {
     UnknownError,
     ParseError,
     TopicNotRegistered,
+    TopicFailedInsert,
     NoPingResponse,
 }
 

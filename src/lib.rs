@@ -4,6 +4,7 @@
 
 pub mod mqttsn;
 pub mod socket;
+pub mod topics;
 // pub(crate) mod ackmap;
 
 #[cfg(not(feature = "no_std"))]
