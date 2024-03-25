@@ -20,7 +20,7 @@ embassy-time = "0.1.5"
 defmt = { version = "0.3", optional = true }
 
 tokio = { version = "1.26.0", features = ["full"], optional = true }
-tokio-dtls-stream-sink = { version = "0.6.0", path="../tokio-dtls-stream-sink", optional = true }
+tokio-dtls-stream-sink = { version = "0.6.0", path="tokio-dtls-stream-sink", optional = true }
 openssl = { version = "0.10.47", optional = true }
 log = { version = "0.4.17", optional = true }
 serde_yaml = { version = "0.9.19", optional = true }

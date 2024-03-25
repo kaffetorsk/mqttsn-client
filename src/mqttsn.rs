@@ -6,7 +6,7 @@ use byte::{TryRead, TryWrite};
 use embassy_futures::select::{select, Either};
 use embassy_sync::pubsub::subscriber::DynSubscriber;
 use embassy_sync::pubsub::publisher::DynPublisher;
-use embassy_time::{with_timeout, Duration};
+use embassy_time::{with_timeout, Duration, TimeoutError};
 use crate::topics::Topics;
 
 #[cfg(feature = "std")]
@@ -45,6 +45,8 @@ pub struct MqttSnClient<S> {
     msg_id: MsgId,
     socket: S,
     topics: Topics,
+    rx: DynSubscriber<'static, MqttMessage>,
+    tx: DynPublisher<'static, MqttMessage>,
 }
 
 impl<S> MqttSnClient<S>
@@ -53,52 +55,78 @@ where
 {
     pub fn new(
         client_id: &str,
+        rx: DynSubscriber<'static, MqttMessage>,
+        tx: DynPublisher<'static, MqttMessage>,
         socket: S
     ) -> Result<MqttSnClient<S>, Error> {
         Ok(MqttSnClient {
             client_id: client_id.into(),
             msg_id: MsgId {last_id: 0},
-            socket,
             topics: Topics::new(),
+            socket, rx, tx
         })
     }
 
+    // pub async fn run_active(
+    //     &mut self,
+    // ) {
+    //     loop {
+    //         match select(self.receive(), self.rx.next_message_pure()).await {
+    //             Either::First(msg) => {
+    //                 // Handle message received from the client's receive method
+    //                 match msg {
+    //                     Ok(Some(Message::Publish(msg))) => self.tx.publish_immediate(MqttMessage::from_publish(msg, &self.topics).unwrap()),
+    //                     _ => (),
+    //                 }
+    //             },
+    //             Either::Second(msg) => {
+    //                 // Handle message received from the user (via DynSubscriber)
+    //                 self.publish(msg).await.unwrap();
+    //             }
+    //         }
+    //     }
+    // }
+
     pub async fn run(
         &mut self,
-        mut rx: DynSubscriber<'_, MqttMessage>,
-        tx: DynPublisher<'_, MqttMessage>,
+        sleep: u16,
     ) {
         loop {
-            match select(self.receive(), rx.next_message_pure()).await {
-                Either::First(msg) => {
-                    // Handle message received from the client's receive method
-                    match msg {
-                        Ok(Some(Message::Publish(msg))) => tx.publish_immediate(MqttMessage::from_publish(msg, &self.topics).unwrap()),
-                        _ => (),
-                    }
-                },
-                Either::Second(msg) => {
+            match with_timeout(
+                Duration::from_secs(sleep.into()),
+                self.rx.next_message_pure()
+            ).await {
+                Ok(msg) => {
                     // Handle message received from the user (via DynSubscriber)
+                    self.connect().await.unwrap();
                     self.publish(msg).await.unwrap();
+                    self.disconnect(Some(sleep)).await.unwrap();
+                },
+                _ => {
+                    self.ping().await.unwrap();
                 }
             }
         }
     }
 
     pub async fn receive(&mut self) -> Result<Option<Message>, Error> {
-        // get acks and publish, push to ackmap and message queue
-        // return other types
         let mut buffer = [0u8; 1024];
-        match Message::try_read(self.socket.recv(&mut buffer).await?, ()) {
-            // Ok((Message::RegAck(msg), _)) => self.acks.insert(msg.msg_id, Message::RegAck(msg)).await?,
-            // Ok((Message::SubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::SubAck(msg)).await?,
-            // Ok((Message::PubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::PubAck(msg)).await?,
-            // Ok((Message::UnsubAck(msg), _)) => self.acks.insert(msg.msg_id, Message::UnsubAck(msg)).await?,
-            //Ok((Message::Publish(msg), _)) => self.rx_queue.write(MqttMessage::from_publish(msg, &self.topics)?),
-            Ok((msg, _)) => return Ok(Some(msg)),
-            _ => return Err(MqttSnClientError::ParseError),
-        };
-        // Ok(None)
+        loop {
+            match Message::try_read(with_timeout(Duration::from_secs(T_RETRY.into()), self.socket.recv(&mut buffer)).await??, ()) {
+                Ok((Message::Publish(msg), _)) => self.recieve_publish(msg).await?,
+                Ok((msg, _)) => return Ok(Some(msg)),
+                _ => return Err(MqttSnClientError::AckError)
+            }
+        }
+    }
+
+    async fn recieve_publish(&mut self, msg: Publish) -> Result<(), Error> {
+        let msg = MqttMessage::from_publish(msg, &self.topics)?;
+        if let Some(ack) = msg.get_ack() {
+            self.send(Message::PubAck(ack)).await?;
+        }
+        self.tx.publish_immediate(msg);
+        Ok(())
     }
 
     pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
@@ -168,22 +196,12 @@ where
         };
         self.send(packet.into()).await?;
 
-        // må pulle gjentatte ganger i et gitt tidsinterval
         match self.receive().await {
             Ok(Some(Message::RegAck(RegAck {
                 topic_id, code: ReturnCode::Accepted, ..
             }))) => Ok(topic_id),
             _ => Err(Error::AckError)
         }
-
-        // match self.acks.wait(msg_id).await? {
-        //     Message::RegAck(RegAck {
-        //         topic_id, code: ReturnCode::Accepted, ..
-        //     }) => {
-        //         return Ok(topic_id);
-        //     },
-        //     _ => Err(MqttSnClientError::AckError)
-        // }
     }
 
     pub async fn connect(&mut self) -> Result<(), Error> {
@@ -344,6 +362,12 @@ impl From<SocketError> for MqttSnClientError {
 impl From<byte::Error> for MqttSnClientError {
     fn from(_e: byte::Error) -> Self {
         MqttSnClientError::CodecError
+    }
+}
+
+impl From<TimeoutError> for MqttSnClientError {
+    fn from(_e: TimeoutError) -> Self {
+        MqttSnClientError::AckError
     }
 }
 
