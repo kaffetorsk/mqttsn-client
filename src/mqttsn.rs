@@ -1,9 +1,7 @@
 use heapless::String;
 use crate::socket::{SendBytes, ReceiveBytes, SocketError};
-// use crate::ackmap::{AckMap, AckMapError};
 use mqtt_sn::defs::*;
 use byte::{TryRead, TryWrite};
-use embassy_futures::select::{select, Either};
 use embassy_sync::pubsub::subscriber::DynSubscriber;
 use embassy_sync::pubsub::publisher::DynPublisher;
 use embassy_time::{with_timeout, Duration, TimeoutError};
@@ -67,26 +65,6 @@ where
         })
     }
 
-    // pub async fn run_active(
-    //     &mut self,
-    // ) {
-    //     loop {
-    //         match select(self.receive(), self.rx.next_message_pure()).await {
-    //             Either::First(msg) => {
-    //                 // Handle message received from the client's receive method
-    //                 match msg {
-    //                     Ok(Some(Message::Publish(msg))) => self.tx.publish_immediate(MqttMessage::from_publish(msg, &self.topics).unwrap()),
-    //                     _ => (),
-    //                 }
-    //             },
-    //             Either::Second(msg) => {
-    //                 // Handle message received from the user (via DynSubscriber)
-    //                 self.publish(msg).await.unwrap();
-    //             }
-    //         }
-    //     }
-    // }
-
     pub async fn run(
         &mut self,
         sleep: u16,
@@ -122,8 +100,10 @@ where
 
     async fn recieve_publish(&mut self, msg: Publish) -> Result<(), Error> {
         let msg = MqttMessage::from_publish(msg, &self.topics)?;
-        if let Some(ack) = msg.get_ack() {
-            self.send(Message::PubAck(ack)).await?;
+        if msg.qos > Some(0) {
+            if let Some(ack) = msg.get_ack() {
+                self.send(Message::PubAck(ack)).await?;
+            }
         }
         self.tx.publish_immediate(msg);
         Ok(())
@@ -132,14 +112,12 @@ where
     pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
         let mut buffer = [0u8; 1024];
         let len = msg.try_write(&mut buffer, ())?;
-        dbg!(&buffer[..len]);
         self.socket.send(&buffer[..len]).await?;
         Ok(())
     }
 
-    // pub async fn get_ack()
-
     pub async fn ping(&mut self) -> Result<(), Error>{
+        debug!("ping");
         self.send(PingReq {client_id: self.client_id.clone()}.into()).await?;
         match self.receive().await {
             Ok(Some(Message::PingResp(_))) => Ok(()),
@@ -148,6 +126,8 @@ where
     }
 
     pub async fn publish(&mut self, msg: MqttMessage) -> Result<(), Error> {
+        debug!("publish");
+        dbg!(&msg);
         let mut flags = Flags::default();
         let topic_id;
         if let Some((topic_type, id)) = self.topics.get_by_topic(&msg.topic) {
@@ -157,6 +137,7 @@ where
             topic_id = self.register(&msg.topic).await?;
             self.topics.insert(msg.topic, TopicIdType::Id, topic_id)?
         }
+        dbg!(&topic_id);
         let next_msg_id = self.msg_id.next();
 
         let mut data = PublishData::new();
@@ -188,6 +169,7 @@ where
     }
 
     async fn register(&mut self, topic: &String<256>) -> Result<u16, Error> {
+        debug!("register");
         let msg_id = self.msg_id.next();
         let packet = Register {
             topic_id: 0,
@@ -205,7 +187,7 @@ where
     }
 
     pub async fn connect(&mut self) -> Result<(), Error> {
-        info!("Connecting MQTT-SN");
+        debug!("connect");
         let packet = Connect {
             flags: Flags::default(),
             duration: 120,
@@ -219,6 +201,7 @@ where
     }
 
     pub async fn subscribe(&mut self, topic: &str) -> Result<(), Error> {
+        debug!("subscribe");
         let mut flags = Flags::default();
         let topic_id;
         let topic = String::<256>::try_from(topic)?;
@@ -226,9 +209,7 @@ where
             topic_id = *id;
             flags.set_topic_id_type(*topic_type as u8);
         } else {
-            debug!("1");
             topic_id = self.register(&topic).await?;
-            debug!("2");
             self.topics.insert(topic, TopicIdType::Id, topic_id)?;
         }
         let msg_id = self.msg_id.next();
@@ -239,7 +220,6 @@ where
             msg_id,
             topic: TopicNameOrId::Id(topic_id),
         };
-        dbg!(&packet);
 
         self.send(packet.into()).await?;
 
@@ -255,6 +235,7 @@ where
 
     /// If duration is set, then client will go to sleep, with keep-alive < duration
     pub async fn disconnect(&mut self, duration: Option<u16>) -> Result<(), Error> {
+        debug!("disconnect");
         let packet = Disconnect {
             duration
         };
@@ -263,6 +244,7 @@ where
 
         match self.receive().await {
             Ok(Some(Message::Disconnect(_))) => Ok(()),
+            Ok(Some(msg)) => {dbg!(msg);Err(Error::AckError)},
             _ => Err(Error::AckError)
         }
     }
@@ -334,7 +316,8 @@ impl MsgId {
 //     }
 // }
 
-#[derive(Debug, Clone, Format)]
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "no_std", derive(Format))]
 pub enum MqttSnClientError {
     ModemError,
     SocketError,
@@ -347,11 +330,11 @@ pub enum MqttSnClientError {
     NoPingResponse,
 }
 
-impl From<nrf_modem::Error> for MqttSnClientError {
-    fn from(_e: nrf_modem::Error) -> Self {
-        MqttSnClientError::ModemError
-    }
-}
+// impl From<nrf_modem::Error> for MqttSnClientError {
+//     fn from(_e: nrf_modem::Error) -> Self {
+//         MqttSnClientError::ModemError
+//     }
+// }
 
 impl From<SocketError> for MqttSnClientError {
     fn from(_e: SocketError) -> Self {

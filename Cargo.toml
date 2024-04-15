@@ -3,20 +3,18 @@ name = "mqttsn-client"
 version = "0.1.0"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 no-std-net = "0.6.0"
 format_no_std = "1.0.0"
-nrf-modem = {version = "0.2.1", features = ["defmt"]}
+
 heapless = "0.8.0"
 mqtt-sn = { version = "0.2.2", path="rust-mqtt-sn" }
-# bimap = { version = "0.6.3", default-features = false }
 byte = "0.2.6"
-embassy-sync = "0.1.0"
+embassy-sync = "0.5"
+embassy-time = "0.3"
 embassy-futures = "0.1.1"
-embassy-time = "0.1.5"
 
+nrf-modem = {version = "0.4", features = ["defmt"], optional = true}
 defmt = { version = "0.3", optional = true }
 
 tokio = { version = "1.26.0", features = ["full"], optional = true }
@@ -33,8 +31,9 @@ cstr = { version = "0.2.11", optional = true }
 
 [features]
 std = ["tokio", "tokio-dtls-stream-sink", "openssl", "log", "serde_yaml",
-        "env_logger", "openssl-errors", "futures", "hex", "cstr"]
-no_std = ["defmt"]
+        "env_logger", "openssl-errors", "futures", "hex", "cstr", 
+        "embassy-time/std", "embassy-time/generic-queue"]
+no_std = ["defmt", "nrf-modem"]
 default = ["no_std"]
 
 [[bin]]
