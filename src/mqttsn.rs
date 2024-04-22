@@ -26,6 +26,12 @@ pub enum TopicIdType {
     Short
 }
 
+pub enum AckResult {
+    Success,
+    TopicId(u16),
+    None
+}
+
 impl TryFrom<u8> for TopicIdType {
     type Error = MqttSnClientError;
     fn try_from(i: u8) -> Result<Self, Error> {
@@ -45,6 +51,7 @@ pub struct MqttSnClient<S> {
     topics: Topics,
     rx: DynSubscriber<'static, MqttMessage>,
     tx: DynPublisher<'static, MqttMessage>,
+    buffer: [u8; 1024],
 }
 
 impl<S> MqttSnClient<S>
@@ -61,7 +68,8 @@ where
             client_id: client_id.into(),
             msg_id: MsgId {last_id: 0},
             topics: Topics::new(),
-            socket, rx, tx
+            socket, rx, tx,
+            buffer: [0u8; 1024]
         })
     }
 
@@ -76,7 +84,7 @@ where
             ).await {
                 Ok(msg) => {
                     // Handle message received from the user (via DynSubscriber)
-                    self.connect().await.unwrap();
+                    self.connect(sleep).await.unwrap();
                     self.publish(msg).await.unwrap();
                     self.disconnect(Some(sleep)).await.unwrap();
                 },
@@ -88,9 +96,12 @@ where
     }
 
     pub async fn receive(&mut self) -> Result<Option<Message>, Error> {
-        let mut buffer = [0u8; 1024];
         loop {
-            match Message::try_read(with_timeout(Duration::from_secs(T_RETRY.into()), self.socket.recv(&mut buffer)).await??, ()) {
+            match Message::try_read(
+                with_timeout(
+                    Duration::from_secs(T_RETRY.into()),
+                    self.socket.recv(&mut self.buffer)).await??, ()
+                ) {
                 Ok((Message::Publish(msg), _)) => self.recieve_publish(msg).await?,
                 Ok((msg, _)) => return Ok(Some(msg)),
                 _ => return Err(MqttSnClientError::AckError)
@@ -110,25 +121,62 @@ where
     }
 
     pub async fn send(&mut self, msg: Message) -> Result<(), Error> {
-        let mut buffer = [0u8; 1024];
-        let len = msg.try_write(&mut buffer, ())?;
-        self.socket.send(&buffer[..len]).await?;
+        let len = msg.try_write(&mut self.buffer, ())?;
+        self.socket.send(&self.buffer[..len]).await?;
         Ok(())
+    }
+
+    pub async fn send_ack<F>(
+        &mut self, packet: Message, ack_handler: F
+    ) -> Result<AckResult, Error>
+    where
+        F: Fn(Message) -> AckResult
+    {
+        for _ in 1..N_RETRY {
+            self.send(packet.clone().into()).await?;
+
+            match with_timeout(
+                Duration::from_secs(T_RETRY.into()),
+                async {
+                    loop{
+                        if let Ok(Some(msg)) = self.receive().await {
+                            match ack_handler(msg) {
+                                AckResult::None => (),
+                                result => return result,
+                            }
+                        }
+                    }
+                }).await
+            {
+                Ok(result) => return Ok(result),
+                _ => ()
+            }
+        }
+        Err(Error::AckError)
     }
 
     pub async fn ping(&mut self) -> Result<(), Error>{
         debug!("ping");
-        self.send(PingReq {client_id: self.client_id.clone()}.into()).await?;
-        match self.receive().await {
-            Ok(Some(Message::PingResp(_))) => Ok(()),
-            _ => Err(Error::NoPingResponse)
-        }
+        let packet = Message::PingReq(PingReq {
+            client_id: self.client_id.clone()
+        });
+        let ack_handler = |msg| {
+            match msg {
+                Message::PingResp(_) => AckResult::Success,
+                _ => AckResult::None
+            }
+        };
+
+        self.send_ack(packet, ack_handler).await?;
+        Ok(())
     }
 
     pub async fn publish(&mut self, msg: MqttMessage) -> Result<(), Error> {
         debug!("publish");
-        dbg!(&msg);
         let mut flags = Flags::default();
+        if let Some(qos) = msg.qos {
+            flags.set_qos(qos)
+        }
         let topic_id;
         if let Some((topic_type, id)) = self.topics.get_by_topic(&msg.topic) {
             topic_id = *id;
@@ -137,33 +185,30 @@ where
             topic_id = self.register(&msg.topic).await?;
             self.topics.insert(msg.topic, TopicIdType::Id, topic_id)?
         }
-        dbg!(&topic_id);
         let next_msg_id = self.msg_id.next();
 
         let mut data = PublishData::new();
         data.push_str(&msg.payload)?;
+        let packet = Message::Publish(
+            Publish {flags, topic_id, msg_id: next_msg_id, data}
+        );
 
-        let packet = Publish { flags, topic_id, msg_id: next_msg_id, data };
-
-        self.send(packet.into()).await?;
-
-        // Get ACK for QoS 1 & 2, retry according to protocol
+        // Get ACK for QoS 1 & 2
         match msg.qos {
             Some(qos) if qos > 0 => {
-                for _ in 1..N_RETRY {
-                    match with_timeout(
-                        Duration::from_secs(T_RETRY.into()),
-                        self.receive()).await
-                    {
-                        Ok(Ok(Some(Message::PubAck(PubAck {
+                let ack_handler = |msg| {
+                    match msg {
+                        Message::PubAck(PubAck {
                             msg_id, code: ReturnCode::Accepted, ..
-                        })))) if msg_id == next_msg_id => return Ok(()),
-                        _ => ()
+                        }) if msg_id == next_msg_id => AckResult::Success,
+                        _ => AckResult::None
                     }
-                }
-                return Err(MqttSnClientError::AckError);
+                };
+                self.send_ack(packet, ack_handler).await?;
             },
-            _ => ()
+            _ => {
+                self.send(packet.into()).await?
+            },
         }
         Ok(())
     }
@@ -171,33 +216,44 @@ where
     async fn register(&mut self, topic: &String<256>) -> Result<u16, Error> {
         debug!("register");
         let msg_id = self.msg_id.next();
-        let packet = Register {
+        let packet = Message::Register(Register {
             topic_id: 0,
             msg_id,
             topic_name: TopicName::from(&topic)
+        });
+        let ack_handler = |msg| {
+            match msg {
+                Message::RegAck(RegAck {
+                    topic_id, code: ReturnCode::Accepted, ..
+                }) => AckResult::TopicId(topic_id),
+                _ => AckResult::None
+            }
         };
-        self.send(packet.into()).await?;
-
-        match self.receive().await {
-            Ok(Some(Message::RegAck(RegAck {
-                topic_id, code: ReturnCode::Accepted, ..
-            }))) => Ok(topic_id),
+        
+        match self.send_ack(packet, ack_handler).await {
+            Ok(AckResult::TopicId(id)) => return Ok(id),
             _ => Err(Error::AckError)
         }
     }
 
-    pub async fn connect(&mut self) -> Result<(), Error> {
+    pub async fn connect(&mut self, duration: u16) -> Result<(), Error> {
         debug!("connect");
-        let packet = Connect {
+        let packet = Message::Connect(Connect {
             flags: Flags::default(),
-            duration: 120,
+            duration,
             client_id: self.client_id.clone()
+        });
+        let ack_handler = |msg| {
+            match msg {
+                Message::ConnAck(
+                    ConnAck{code: ReturnCode::Accepted}
+                ) => AckResult::Success,
+                _ => AckResult::None
+            }
         };
-        self.send(packet.into()).await?;
-        match self.receive().await {
-            Ok(Some(Message::ConnAck(ConnAck{code: ReturnCode::Accepted}))) => Ok(()),
-            _ => Err(Error::AckError)
-        }
+
+        self.send_ack(packet, ack_handler).await?;
+        Ok(())
     }
 
     pub async fn subscribe(&mut self, topic: &str) -> Result<(), Error> {
@@ -215,38 +271,40 @@ where
         let msg_id = self.msg_id.next();
         let mut flags = Flags::default();
         flags.set_topic_id_type(1);
-        let packet = Subscribe {
+
+        let packet = Message::Subscribe(Subscribe {
             flags,
             msg_id,
             topic: TopicNameOrId::Id(topic_id),
+        });
+        let ack_handler = |msg| {
+            match msg {
+                Message::SubAck(SubAck {
+                    code: ReturnCode::Accepted, ..
+                }) => AckResult::Success,
+                _ => AckResult::None
+            }
         };
 
-        self.send(packet.into()).await?;
-
-        match self.receive().await? {
-            Some(Message::SubAck(SubAck {
-                code: ReturnCode::Accepted, ..
-            })) => {
-                return Ok(());
-            },
-            _ => Err(MqttSnClientError::AckError)
-        }
+        self.send_ack(packet, ack_handler).await?;
+        Ok(())
     }
 
     /// If duration is set, then client will go to sleep, with keep-alive < duration
     pub async fn disconnect(&mut self, duration: Option<u16>) -> Result<(), Error> {
         debug!("disconnect");
-        let packet = Disconnect {
+        let packet = Message::Disconnect(Disconnect {
             duration
+        });
+        let ack_handler = |msg| {
+            match msg {
+                Message::Disconnect(_) => AckResult::Success,
+                _ => AckResult::None
+            }
         };
 
-        self.send(packet.into()).await?;
-
-        match self.receive().await {
-            Ok(Some(Message::Disconnect(_))) => Ok(()),
-            Ok(Some(msg)) => {dbg!(msg);Err(Error::AckError)},
-            _ => Err(Error::AckError)
-        }
+        self.send_ack(packet, ack_handler).await?;
+        Ok(())
     }
 }
 
