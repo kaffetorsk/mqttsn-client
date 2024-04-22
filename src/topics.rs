@@ -4,13 +4,13 @@ use crate::mqttsn::{MqttSnClientError, TopicIdType};
 type Error = MqttSnClientError;
 
 pub struct Topics {
-    store: FnvIndexMap<String<256>, (TopicIdType, u16), 32>
+    store: FnvIndexMap<String<256>, (TopicIdType, u16), 16>
 }
 
 impl Topics {
     pub fn new() -> Self {
         Self {
-            store: FnvIndexMap::<String<256>, (TopicIdType, u16), 32>::new()
+            store: FnvIndexMap::<String<256>, (TopicIdType, u16), 16>::new()
         }
     }
     pub fn insert(
