@@ -24,7 +24,7 @@ async fn main() {
         MQTT_RECV.dyn_publisher().unwrap(),
         session
     ).unwrap();
-    mqtt_client.connect().await.unwrap();
+    mqtt_client.connect(120).await.unwrap();
     info!("MQTT-SN connected");
 
     mqtt_client.subscribe("test/recv".into()).await.unwrap();
@@ -43,7 +43,7 @@ async fn main() {
         },
         async {
             sleep(Duration::from_secs(12)).await;
-            let msg = MqttMessage::new("test/send", "detterenpayload", None).unwrap();
+            let msg = MqttMessage::new("test/send", "detterenpayload", Some(2)).unwrap();
             mqtt_publisher.publish_immediate(msg);
             sleep(Duration::from_secs(12)).await;
             let msg = MqttMessage::new("test/recv", "detterenpayload2", None).unwrap();
