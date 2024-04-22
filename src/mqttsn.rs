@@ -132,8 +132,10 @@ where
     where
         F: Fn(Message) -> AckResult
     {
+        let len = packet.try_write(&mut self.buffer, ())?;
+        
         for _ in 1..N_RETRY {
-            self.send(packet.clone().into()).await?;
+            self.socket.send(&self.buffer[..len]).await?;
 
             match with_timeout(
                 Duration::from_secs(T_RETRY.into()),
