@@ -86,6 +86,10 @@ where
                     // Handle message received from the user (via DynSubscriber)
                     self.connect(sleep).await.unwrap();
                     self.publish(msg).await.unwrap();
+                    // Publish aditional msg if queued
+                    while let Some(msg) = self.rx.try_next_message_pure() {
+                        self.publish(msg).await.unwrap();
+                    }
                     self.disconnect(Some(sleep)).await.unwrap();
                 },
                 _ => {
@@ -179,13 +183,14 @@ where
         if let Some(qos) = msg.qos {
             flags.set_qos(qos)
         }
+
         let topic_id;
         if let Some((topic_type, id)) = self.topics.get_by_topic(&msg.topic) {
             topic_id = *id;
             flags.set_topic_id_type(*topic_type as u8);
         } else {
             topic_id = self.register(&msg.topic).await?;
-            self.topics.insert(msg.topic, TopicIdType::Id, topic_id)?
+            self.topics.insert(msg.topic, TopicIdType::Id, topic_id)?;
         }
         let next_msg_id = self.msg_id.next();
 
@@ -209,7 +214,7 @@ where
                 self.send_ack(packet, ack_handler).await?;
             },
             _ => {
-                self.send(packet.into()).await?
+                self.send(packet.into()).await?;
             },
         }
         Ok(())
@@ -367,15 +372,6 @@ impl MsgId {
     }
 }
 
-// impl Iterator for MsgId {
-//     type Item = u16;
-
-//     fn next(&mut self) -> Option<Self::Item> {
-//         self.last_id += 1;
-//         Some(self.last_id)
-//     }
-// }
-
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "no_std", derive(Format))]
 pub enum MqttSnClientError {
@@ -389,12 +385,6 @@ pub enum MqttSnClientError {
     TopicFailedInsert,
     NoPingResponse,
 }
-
-// impl From<nrf_modem::Error> for MqttSnClientError {
-//     fn from(_e: nrf_modem::Error) -> Self {
-//         MqttSnClientError::ModemError
-//     }
-// }
 
 impl From<SocketError> for MqttSnClientError {
     fn from(_e: SocketError) -> Self {
@@ -413,12 +403,6 @@ impl From<TimeoutError> for MqttSnClientError {
         MqttSnClientError::AckError
     }
 }
-
-// impl From<AckMapError> for MqttSnClientError {
-//     fn from(_e: AckMapError) -> Self {
-//         MqttSnClientError::AckError
-//     }
-// }
 
 impl From<()> for MqttSnClientError {
     fn from(_e: ()) -> Self {
