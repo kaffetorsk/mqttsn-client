@@ -8,7 +8,7 @@ no-std-net = "0.6.0"
 format_no_std = "1.0.0"
 
 heapless = "0.8.0"
-mqtt-sn = { version = "0.2.2", git="https://github.com/tyr84/rust-mqtt-sn.git" }
+mqtt-sn = { version = "0.2.2", git="https://github.com/kaffetorsk/rust-mqtt-sn.git" }
 byte = "0.2.6"
 embassy-sync = "0.5"
 embassy-time = "0.3"

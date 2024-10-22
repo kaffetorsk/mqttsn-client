@@ -720,7 +720,7 @@ dependencies = [
 [[package]]
 name = "mqtt-sn"
 version = "0.2.2"
-source = "git+https://github.com/tyr84/rust-mqtt-sn.git#8294fe1dc5b7da32783da6ba060b197946e4e5ca"
+source = "git+https://github.com/kaffetorsk/rust-mqtt-sn.git#8294fe1dc5b7da32783da6ba060b197946e4e5ca"
 dependencies = [
  "bitfield 0.14.0",
  "byte",
