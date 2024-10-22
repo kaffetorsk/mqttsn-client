@@ -8,7 +8,7 @@ no-std-net = "0.6.0"
 format_no_std = "1.0.0"
 
 heapless = "0.8.0"
-mqtt-sn = { version = "0.2.2", path="rust-mqtt-sn" }
+mqtt-sn = { version = "0.2.2", git="https://github.com/tyr84/rust-mqtt-sn.git" }
 byte = "0.2.6"
 embassy-sync = "0.5"
 embassy-time = "0.3"
@@ -18,7 +18,7 @@ nrf-modem = {version = "0.4", features = ["defmt"], optional = true}
 defmt = { version = "0.3", optional = true }
 
 tokio = { version = "1.26.0", features = ["full"], optional = true }
-tokio-dtls-stream-sink = { version = "0.6.0", path="tokio-dtls-stream-sink", optional = true }
+tokio-dtls-stream-sink = { version = "0.6.0", git="https://github.com/drogue-iot/tokio-dtls-stream-sink.git", optional = true }
 openssl = { version = "0.10.47", optional = true }
 log = { version = "0.4.17", optional = true }
 serde_yaml = { version = "0.9.19", optional = true }

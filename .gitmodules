@@ -1,6 +1,0 @@
-[submodule "rust-mqtt-sn"]
-	path = rust-mqtt-sn
-	url = https://github.com/tyr84/rust-mqtt-sn.git
-[submodule "tokio-dtls-stream-sink"]
-	path = tokio-dtls-stream-sink
-	url = ./tokio-dtls-stream-sink
